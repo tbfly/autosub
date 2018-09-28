@@ -23,7 +23,8 @@ from autosub.formatters import FORMATTERS
 DEFAULT_SUBTITLE_FORMAT = 'srt'
 DEFAULT_CONCURRENCY = 10
 DEFAULT_SRC_LANGUAGE = 'en'
-DEFAULT_DST_LANGUAGE = 'en'
+#DEFAULT_DST_LANGUAGE = 'en'
+DEFAULT_DST_LANGUAGE = ['en']
 
 
 def percentile(arr, percent):
@@ -235,12 +236,23 @@ def main():
         )
         return 1
 
-    if args.dst_language not in LANGUAGE_CODES.keys():
-        print(
-            "Destination language not supported. "
-            "Run with --list-languages to see all supported languages."
-        )
-        return 1
+    if "," in args.dst_language:
+        dst_language_list = args.dst_language.split(",")
+        unsupport_lang_list = [x for x in dst_language_list if x not in LANGUAGE_CODES.keys()]
+        if len(unsupport_lang_list) > 0:
+            print(
+                "Destination language %s not supported. "
+                "Run with --list-languages to see all supported languages."
+            ) % unsupport_lang_list
+            return 1
+    else:
+        dst_language_list = [args.dst_language]
+        if args.dst_language not in LANGUAGE_CODES.keys():
+            print(
+                "Destination language not supported. "
+                "Run with --list-languages to see all supported languages."
+            )
+            return 1
 
     if not args.source_path:
         print("Error: You need to specify a source path.")
@@ -251,7 +263,7 @@ def main():
             source_path=args.source_path,
             concurrency=args.concurrency,
             src_language=args.src_language,
-            dst_language=args.dst_language,
+            dst_language_list=dst_language_list,
             api_key=args.api_key,
             subtitle_file_format=args.format,
             output=args.output,
@@ -268,7 +280,7 @@ def generate_subtitles(
     output=None,
     concurrency=DEFAULT_CONCURRENCY,
     src_language=DEFAULT_SRC_LANGUAGE,
-    dst_language=DEFAULT_DST_LANGUAGE,
+    dst_language_list=DEFAULT_DST_LANGUAGE,
     subtitle_file_format=DEFAULT_SUBTITLE_FORMAT,
     api_key=None,
 ):
@@ -281,7 +293,7 @@ def generate_subtitles(
     recognizer = SpeechRecognizer(language=src_language, rate=audio_rate,
                                   api_key=GOOGLE_SPEECH_API_KEY)
 
-    transcripts = []
+    dest_list = []
     if regions:
         try:
             widgets = ["Converting speech regions to FLAC files: ", Percentage(), ' ', Bar(), ' ',
@@ -296,12 +308,15 @@ def generate_subtitles(
             widgets = ["Performing speech recognition: ", Percentage(), ' ', Bar(), ' ', ETA()]
             pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
 
+            transcripts = []
             for i, transcript in enumerate(pool.imap(recognizer, extracted_regions)):
                 transcripts.append(transcript)
                 pbar.update(i)
             pbar.finish()
 
-            if not is_same_language(src_language, dst_language):
+            for dst_language in dst_language_list:
+              translated_transcripts = []
+              if not is_same_language(src_language, dst_language):
                 if api_key:
                     google_translate_api_key = api_key
                     translator = Translator(dst_language, google_translate_api_key,
@@ -310,18 +325,29 @@ def generate_subtitles(
                     prompt = "Translating from {0} to {1}: ".format(src_language, dst_language)
                     widgets = [prompt, Percentage(), ' ', Bar(), ' ', ETA()]
                     pbar = ProgressBar(widgets=widgets, maxval=len(regions)).start()
-                    translated_transcripts = []
                     for i, transcript in enumerate(pool.imap(translator, transcripts)):
                         translated_transcripts.append(transcript)
                         pbar.update(i)
                     pbar.finish()
-                    transcripts = translated_transcripts
                 else:
                     print(
                         "Error: Subtitle translation requires specified Google Translate API key. "
                         "See --help for further information."
                     )
                     return 1
+
+              timed_subtitles = [(r, t) for r, t in zip(regions, translated_transcripts) if t]
+              formatter = FORMATTERS.get(subtitle_file_format)
+              formatted_subtitles = formatter(timed_subtitles)
+
+              dest = output
+              if not dest:
+                  base, ext = os.path.splitext(source_path)
+                  dest = "{base}_{lang}.{format}".format(base=base, lang=dst_language, format=subtitle_file_format)
+
+              dest_list.append(dest)
+              with open(dest, 'wb') as f:
+                  f.write(formatted_subtitles.encode("utf-8"))
 
         except KeyboardInterrupt:
             pbar.finish()
@@ -330,22 +356,9 @@ def generate_subtitles(
             print("Cancelling transcription")
             raise
 
-    timed_subtitles = [(r, t) for r, t in zip(regions, transcripts) if t]
-    formatter = FORMATTERS.get(subtitle_file_format)
-    formatted_subtitles = formatter(timed_subtitles)
-
-    dest = output
-
-    if not dest:
-        base, ext = os.path.splitext(source_path)
-        dest = "{base}.{format}".format(base=base, format=subtitle_file_format)
-
-    with open(dest, 'wb') as f:
-        f.write(formatted_subtitles.encode("utf-8"))
-
     os.remove(audio_filename)
 
-    return dest
+    return dest_list
 
 
 if __name__ == '__main__':
