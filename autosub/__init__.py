@@ -336,7 +336,11 @@ def generate_subtitles(
                     )
                     return 1
 
-              timed_subtitles = [(r, t) for r, t in zip(regions, translated_transcripts) if t]
+              if len(translated_transcripts) > 0:
+                timed_subtitles = [(r, t) for r, t in zip(regions, translated_transcripts) if t]
+              else:
+                timed_subtitles = [(r, t) for r, t in zip(regions, transcripts) if t]
+
               formatter = FORMATTERS.get(subtitle_file_format)
               formatted_subtitles = formatter(timed_subtitles)
 
